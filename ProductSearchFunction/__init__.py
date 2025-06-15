@@ -1,28 +1,55 @@
 import logging
+import pyodbc
 import azure.functions as func
-import json
-
-PRODUCTS = [
-    {"id": 1, "name": "Apple iPhone 15", "category": "Mobile"},
-    {"id": 2, "name": "Samsung Galaxy S24", "category": "Mobile"},
-    {"id": 3, "name": "Sony WH-1000XM5", "category": "Headphones"},
-    {"id": 4, "name": "MacBook Pro", "category": "Laptop"}
-]
+import os
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
-    logging.info("Processing product search request.")
+    logging.info('Processing product search request.')
 
-    name = req.params.get('name')
-    category = req.params.get('category')
-    product_id = req.params.get('id')
+    query = req.params.get('query')
+    if not query:
+        return func.HttpResponse(
+            "Please provide a 'query' parameter in the URL.",
+            status_code=400
+        )
 
-    result = PRODUCTS
+    try:
+        # Connection string from local.settings.json / Application Settings
+        conn_str = os.environ["SQL_CONNECTION_STRING"]
 
-    if product_id:
-        result = [p for p in result if str(p["id"]) == product_id]
-    if name:
-        result = [p for p in result if name.lower() in p["name"].lower()]
-    if category:
-        result = [p for p in result if category.lower() in p["category"].lower()]
+        # Connect to Azure SQL Database
+        conn = pyodbc.connect(conn_str)
+        cursor = conn.cursor()
 
-    return func.HttpResponse(json.dumps(result, indent=2), mimetype="application/json")
+        # Perform the search
+        sql_query = """
+            SELECT ProductID, ProductName, Price, Stock, CategoryID, ImageURL
+            FROM ProductCatalog
+            WHERE LOWER(ProductName) LIKE LOWER(?)
+        """
+        cursor.execute(sql_query, ('%' + query + '%',))
+        rows = cursor.fetchall()
+
+        if not rows:
+            return func.HttpResponse("No products found matching the query.", status_code=404)
+
+        # Build response
+        results = []
+        for row in rows:
+            results.append({
+                "ProductID": row.ProductID,
+                "ProductName": row.ProductName,
+                "Price": row.Price,
+                "Stock": row.Stock,
+                "CategoryID": row.CategoryID,
+                "ImageURL": row.ImageURL
+            })
+
+        return func.HttpResponse(str(results), mimetype="application/json", status_code=200)
+
+    except Exception as e:
+        logging.error(f"Error occurred: {e}")
+        return func.HttpResponse(
+            f"Internal Server Error: {str(e)}",
+            status_code=500
+        )
